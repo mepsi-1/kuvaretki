@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="fi">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Löytöretki</title>
+  </head>
+  <body>
+    <div id="map"></div>
+
+    <header class="panel top">
+      <h1>Löytöretki</h1>
+      <p class="tagline">Näe tuttu ympäristö uusin silmin</p>
+    </header>
+
+    <div class="panel bottom">
+      <button id="locate" type="button" title="Missä olen?">📍</button>
+      <button id="discover" type="button" class="primary">Löydä jotain uutta</button>
+    </div>
+
+    <div id="toast" role="status" aria-live="polite"></div>
+
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>
