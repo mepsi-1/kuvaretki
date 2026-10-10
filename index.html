@@ -3,40 +3,18 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-    <meta name="theme-color" content="#2f7d4a" />
-    <meta name="description" content="Tunnetko naapurisi – myös ne, jotka eivät ole ihmisiä? Lajivisa oman lähiympäristösi eliöistä." />
-    <title>Tunnista naapurisi</title>
-    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🦔</text></svg>" />
+    <meta name="theme-color" content="#e9e2d3" />
+    <meta name="description" content="Tunnet kotiseutusi kartan. Tiedätkö, kuka siellä asuu? Karttapeli oman alueesi eliöistä." />
+    <title>Kuvaretki</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🦉</text></svg>" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Caveat:wght@500;700&family=Work+Sans:ital,wght@0,400;0,600;1,400&display=swap" rel="stylesheet" />
   </head>
   <body>
-    <div id="map" aria-label="Kartta: valitse paikka napauttamalla"></div>
-
-    <aside id="start-panel" class="card">
-      <header class="brand">
-        <span class="logo" aria-hidden="true">🦔</span>
-        <div>
-          <h1>Tunnista naapurisi</h1>
-          <p class="tagline">Tunnet naapurisi – mutta tunnetko ne, jotka eivät ole ihmisiä?</p>
-        </div>
-      </header>
-      <p class="hint">Napauta karttaa, käytä sijaintiasi tai valitse valmis paikka. Visan lajit on oikeasti havaittu juuri siellä.</p>
-      <div class="actions">
-        <button type="button" id="locate" class="btn secondary">📍 Käytä sijaintiani</button>
-      </div>
-      <div class="chips" id="quick-places"></div>
-      <section id="place-info" hidden aria-live="polite"></section>
-    </aside>
-
-    <div id="quiz" class="overlay" hidden>
-      <div class="sheet" id="quiz-sheet" role="dialog" aria-modal="true" aria-label="Lajivisa"></div>
-    </div>
-
-    <div id="results" class="overlay open" hidden>
-      <div class="sheet" id="results-sheet" role="dialog" aria-modal="true" aria-label="Tulokset"></div>
-    </div>
-
+    <div id="map" aria-label="Kartta"></div>
+    <aside id="panel" class="card panel"></aside>
     <div id="toast" role="status" aria-live="polite"></div>
-
     <script type="module" src="/src/main.js"></script>
   </body>
 </html>

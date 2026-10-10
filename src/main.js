@@ -1,209 +1,258 @@
 import 'leaflet/dist/leaflet.css';
 import './style.css';
 import { createMap } from './map.js';
-import { loadPool, getTaxa, getLastSighting, reverseGeocode } from './api.js';
-import { QUICK_PLACES } from './places.js';
+import { loadRegions, loadCards } from './data.js';
 import {
-  buildRound, makeOptions, scoreAnswer, titleFor, loadBest, saveBest, STREAK_FOR_DOUBLE,
-} from './quiz.js';
+  dealRound, scoreFor, feedbackFor, choicePoints, choiceFeedbackFor, whenPoints, whenFeedbackFor, titleFor,
+  loadBest, saveBest, ROUND_LENGTH,
+} from './cards.js';
+import { nearest, pointInGeometry } from './geo.js';
 import * as ui from './ui.js';
 
-const MIN_SPECIES_TO_PLAY = 4;
-const ROUND_LENGTH = 10;
-
 const state = {
-  place: null, // { lat, lng, name, key, radiusKm }
-  pool: null,
+  regions: [],
+  region: null, // one of state.regions
+  cards: null, // the region's cards, once loaded
+  played: new Map(), // slug → Set of card ids played recently
   loadToken: 0,
   round: null,
 };
 
-const panel = document.getElementById('start-panel');
+const panelEl = document.getElementById('panel');
 const isNarrow = () => window.matchMedia('(max-width: 720px)').matches;
 
 const map = createMap(document.getElementById('map'), {
-  onPick: (lat, lng) => selectPlace(lat, lng),
-  // Keep the selected area visible beside (desktop) or above (phone) the start panel.
+  onPick: (lat, lng) => {
+    const region = state.regions.find((r) => pointInGeometry(lat, lng, r.geojson));
+    if (region) selectRegion(region);
+    else ui.toast('Valitse jokin Suomen maakunnista.');
+  },
+  onGuess: (g) => lockGuess(g),
+  onOutside: () => ui.toast('Arvaa alueen sisältä: raja näkyy katkoviivana.', 2500),
+  // Keep the map content visible beside (desktop) or above (phone) the panel.
   getPadding: () =>
     isNarrow()
-      ? { paddingTopLeft: [20, 20], paddingBottomRight: [20, panel.offsetHeight + 20] }
-      : { paddingTopLeft: [panel.offsetWidth + 40, 20], paddingBottomRight: [60, 20] },
+      ? { paddingTopLeft: [20, 20], paddingBottomRight: [20, panelEl.offsetHeight + 20] }
+      : { paddingTopLeft: [panelEl.offsetWidth + 40, 20], paddingBottomRight: [60, 20] },
 });
 
-// --- Choosing a place ----------------------------------------------------------------
-ui.renderQuickPlaces(QUICK_PLACES, (p) => selectPlace(p.lat, p.lng, p.name, p.slug));
-
-document.getElementById('locate').addEventListener('click', () => {
-  if (!navigator.geolocation) return ui.toast('Selaimesi ei tue paikannusta – napauta karttaa.');
-  ui.showPlaceLoading('Paikannetaan…');
-  navigator.geolocation.getCurrentPosition(
-    ({ coords }) => selectPlace(coords.latitude, coords.longitude),
-    () => {
-      ui.showPlaceError('Sijaintia ei saatu. Napauta karttaa tai valitse valmis paikka.');
-    },
-    { enableHighAccuracy: false, timeout: 10000, maximumAge: 60000 }
-  );
-});
-
-async function selectPlace(lat, lng, knownName = null, slug = null) {
-  const token = ++state.loadToken;
-  const stale = () => token !== state.loadToken;
-  state.pool = null;
-  map.setPlace(lat, lng, 1);
-  ui.showPlaceLoading('Haetaan alueella havaittuja lajeja…');
-
-  const namePromise = knownName ? Promise.resolve(knownName) : reverseGeocode(lat, lng).catch(() => null);
-  let pool;
-  try {
-    pool = await loadPool(lat, lng, { onProgress: (msg) => !stale() && ui.showPlaceLoading(msg) });
-  } catch (err) {
-    console.error(err);
-    if (!stale()) ui.showPlaceError('Lajitietoja ei saatu haettua. Tarkista verkkoyhteys ja yritä uudelleen.');
-    return;
-  }
-  if (stale()) return;
-
-  if (pool.fallback) {
-    const fb = pool.fallback;
-    ui.toast(`Lajipalvelu ei vastannut – käytetään tallennettua aineistoa: ${fb.name}.`, 6000);
-    ({ lat, lng, slug } = fb);
-    knownName = fb.name;
-  } else if (pool.widened) {
-    ui.toast(`Lähellä oli vähän havaintoja, joten laajensimme aluetta ${pool.radiusKm} km:iin.`);
-  }
-  map.setPlace(lat, lng, pool.radiusKm);
-
-  if (pool.species.length < MIN_SPECIES_TO_PLAY) {
-    ui.showPlaceError(
-      'Täällä on havaittu liian vähän lajeja visaa varten. Kokeile kaupunkia tai jotain valmiista paikoista.'
-    );
-    return;
-  }
-
-  const name = (pool.fallback ? knownName : await namePromise) || 'Valitsemasi paikka';
-  if (stale()) return;
-  state.pool = pool;
-  state.place = { lat, lng, name, radiusKm: pool.radiusKm, key: slug ?? `${lat.toFixed(2)},${lng.toFixed(2)}` };
-  ui.showPlaceReady({ name, pool, best: loadBest(state.place.key), onStart: startRound });
-}
-
-// --- Quiz flow ---------------------------------------------------------------------------
-function startRound() {
-  if (!state.pool) return;
-  const species = buildRound(state.pool.species, ROUND_LENGTH);
-  for (const s of species) new Image().src = s.photo.replace('/medium.', '/large.');
-  state.round = {
-    species,
-    details: getTaxa(species.map((s) => s.id)).catch(() => new Map()),
-    i: 0, score: 0, streak: 0, correct: 0, answers: [],
-    options: [], answered: false, shownAt: 0,
-  };
-  ui.closeResults();
-  ui.openQuiz();
-  showQuestion();
-}
-
-function showQuestion() {
-  const r = state.round;
-  const target = r.species[r.i];
-  r.options = makeOptions(target, state.pool.species);
-  r.answered = false;
-  r.shownAt = 0;
-  ui.renderQuestion({
-    target,
-    options: r.options,
-    index: r.i,
-    total: r.species.length,
-    score: r.score,
-    streak: r.streak,
-    getMorePhotos: async () => (await r.details).get(target.id)?.photos ?? [],
-    onPhotoLoad: () => (r.shownAt ||= performance.now()),
-    onPhotoFail: skipQuestion,
-    onAnswer: answer,
-    onQuit: quitRound,
-  });
-}
-
-function answer(idx) {
-  const r = state.round;
-  if (!r || r.answered) return;
-  r.answered = true;
-  const target = r.species[r.i];
-  const correctIdx = r.options.indexOf(target);
-  const correct = idx === correctIdx;
-  const elapsed = r.shownAt ? performance.now() - r.shownAt : 10000;
-  const points = scoreAnswer(r, correct, elapsed);
-  r.answers.push({ species: target, correct });
-
-  ui.showAnswer({ chosenIdx: idx, correctIdx, score: r.score, streak: r.streak });
-  const { lat, lng, radiusKm } = state.place;
-  ui.showFeedback({
-    target,
-    correct,
-    points,
-    doubled: correct && r.streak >= STREAK_FOR_DOUBLE,
-    isLast: r.i === r.species.length - 1,
-    place: state.place,
-    details: r.details,
-    sighting: getLastSighting(target.id, lat, lng, radiusKm).catch(() => null),
-    onNext: next,
-  });
-}
-
-function next() {
-  const r = state.round;
-  if (!r?.answered) return;
-  r.i++;
-  if (r.i >= r.species.length) finishRound();
-  else showQuestion();
-}
-
-function skipQuestion() {
-  const r = state.round;
-  r.species.splice(r.i, 1);
-  if (r.i >= r.species.length) finishRound();
-  else showQuestion();
-}
-
-function quitRound() {
+// --- Start screen: choosing a region ------------------------------------------------
+function showStart() {
   state.round = null;
-  ui.closeQuiz();
+  map.lockToRegion(false);
+  map.clearRound();
+  map.setMode('pick');
+  map.showOverview(true);
+  ui.renderStart({
+    regions: state.regions,
+    selected: state.region?.slug,
+    onRegion: (slug) => selectRegion(state.regions.find((r) => r.slug === slug)),
+    onChange: () => map.fitFinland(),
+  });
+  if (state.region && state.cards) {
+    ui.markRegion(state.region.slug);
+    showRegionReady();
+  }
+}
+
+async function selectRegion(region) {
+  if (!region) return;
+  const token = ++state.loadToken;
+  state.region = region;
+  state.cards = null;
+  ui.markRegion(region.slug);
+  map.showRegion(region.geojson);
+  ui.showRegionLoading('Ladataan lajeja…');
+  try {
+    const cards = await loadCards(region.slug);
+    if (token !== state.loadToken) return;
+    state.cards = cards;
+    showRegionReady();
+  } catch (err) {
+    if (token !== state.loadToken) return;
+    console.error(err);
+    ui.showRegionError('Alueen tietoja ei saatu ladattua. Yritä uudelleen.');
+  }
+}
+
+function showRegionReady() {
+  const r = state.region;
+  ui.showRegionReady({
+    name: r.name,
+    stats: r.stats,
+    best: loadBest(r.slug),
+    onStart: startRound,
+  });
+  // The panel changed height (on a phone), so frame the region against its final size.
+  map.fitRegion();
+}
+
+// --- Round ------------------------------------------------------------------------------
+function startRound() {
+  if (!state.cards?.length) return showStart();
+  const slug = state.region.slug;
+  if (!state.played.has(slug)) state.played.set(slug, new Set());
+  const deck = dealRound(state.cards, state.played.get(slug), state.region.metrics.d0);
+  // Without month data the region deals no "when" questions, so the round may be shorter.
+  state.round = { deck, total: deck.length, results: [], score: 0, card: null };
+  map.showOverview(false);
+  nextCard();
+}
+
+function nextCard() {
+  const r = state.round;
+  if (!r) return;
+  const card = r.deck.shift();
+  if (!card) return finishRound();
+  r.card = card;
+  map.clearRound();
+  if (card.choice) return showChoice(card);
+  if (card.when) return showWhen(card);
+  map.setMode('guess');
+  ui.renderCard({ ...progress(), card, regionName: state.region.name });
+  // Measure the lock and the fit against the card panel that is now on screen.
+  map.lockToRegion(true);
+  map.fitRegion();
+}
+
+// Fields every question panel shows and needs.
+function progress() {
+  const r = state.round;
+  return { index: r.results.length, total: r.total, score: r.score, onQuit: showStart, onPhotoFail: nextCard };
+}
+
+function lockGuess(guess) {
+  const r = state.round;
+  if (!r?.card) return;
+  map.setMode('locked');
+  const card = r.card;
+  r.card = null;
+  const { point, distance } = nearest(guess, card.sightings);
+  const points = scoreFor(distance, state.region.metrics.d0);
+  r.score += points;
+  r.results.push({ card, guess, points });
+  // Render first so the fit leaves room for the (taller) verdict panel.
+  ui.renderReveal({
+    points,
+    feedback: feedbackFor(points),
+    score: r.score,
+    isLast: !r.deck.length,
+    onNext: nextCard,
+  });
+  map.reveal(card, guess, point, distance);
+}
+
+// "When is it seen?": `q` is { card } from dealRound.
+function showWhen(q) {
+  const r = state.round;
+  map.setMode('locked');
+  ui.renderWhen({
+    ...progress(),
+    card: q.card,
+    regionName: state.region.name,
+    firstWhen: !r.results.some((x) => x.month != null),
+    onPick: pickWhen,
+  });
+  map.lockToRegion(true);
+  // The sightings are no hint about the month, so they're on the map from the start.
+  map.showSightings(q.card);
+}
+
+function pickWhen(month) {
+  const r = state.round;
+  const q = r?.card;
+  if (!q?.when) return;
+  r.card = null;
+  const points = whenPoints(q.card, month);
+  r.score += points;
+  r.results.push({ card: q.card, month, points });
+  ui.renderWhenReveal({
+    card: q.card,
+    month,
+    points,
+    feedback: whenFeedbackFor(points, q.card),
+    score: r.score,
+    isLast: !r.deck.length,
+    onNext: nextCard,
+  });
+}
+
+// "Which one lives here?": `q` is { card, options, spot } from dealRound.
+function showChoice(q) {
+  const r = state.round;
+  map.setMode('locked');
+  ui.renderChoice({
+    ...progress(),
+    options: q.options,
+    firstChoice: !r.results.some((x) => x.spot),
+    onPick: pickChoice,
+  });
+  map.lockToRegion(true);
+  map.showSpot(q.spot, state.region.metrics.d0 / 2);
+}
+
+function pickChoice(picked) {
+  const r = state.round;
+  const q = r?.card;
+  if (!q?.choice) return;
+  r.card = null;
+  const correct = q.options[picked] === q.card;
+  const points = choicePoints(correct);
+  r.score += points;
+  r.results.push({ card: q.card, spot: q.spot, points, correct });
+  ui.renderChoiceReveal({
+    pickedIndex: picked,
+    correct,
+    feedback: choiceFeedbackFor(correct, q.card),
+    score: r.score,
+    isLast: !r.deck.length,
+    onNext: nextCard,
+  });
+  map.revealSpot(q.card, q.spot, correct);
 }
 
 function finishRound() {
   const r = state.round;
-  ui.closeQuiz();
   state.round = null;
-  if (!r.answers.length) {
-    ui.toast('Kuvia ei saatu ladattua. Yritä hetken päästä uudelleen.');
-    return;
+  if (!r?.results.length) {
+    ui.toast('Lajikuvia ei saatu ladattua. Yritä hetken päästä uudelleen.');
+    return showStart();
   }
-  const total = r.answers.length;
-  const { isNew } = saveBest(state.place.key, r.score);
-  ui.showResults({
-    correct: r.correct,
-    total,
-    score: r.score,
-    title: titleFor(r.correct, total),
-    placeName: state.place.name,
-    isNewBest: isNew,
-    answers: r.answers,
+  map.setMode('locked');
+  map.lockToRegion(false);
+  map.showSummary(r.results);
+  const max = r.results.length * 1000;
+  const isNewBest = r.results.length === ROUND_LENGTH && saveBest(state.region.slug, r.score);
+  ui.renderResults({
+    regionName: state.region.name,
+    results: r.results,
+    total: r.score,
+    max,
+    title: titleFor(r.score, max),
+    isNewBest,
     onAgain: startRound,
     onChange: () => {
-      ui.closeResults();
-      ui.showPlaceReady({ name: state.place.name, pool: state.pool, best: loadBest(state.place.key), onStart: startRound });
+      showStart();
+      map.fitFinland();
     },
   });
-  if (r.correct / total >= 0.7) ui.confetti();
+  if (r.score / max >= 0.6) ui.confetti();
 }
 
-// --- Keyboard: 1–4 answer, Enter next, Esc closes ----------------------------------------
-document.addEventListener('keydown', (e) => {
-  const r = state.round;
-  if (r && !r.answered && /^[1-4]$/.test(e.key) && Number(e.key) <= r.options.length) {
-    answer(Number(e.key) - 1);
-  } else if (e.key === 'Escape') {
-    if (r) quitRound();
-    else ui.closeResults();
+// --- Boot ---------------------------------------------------------------------------------
+async function boot() {
+  showStart();
+  ui.showRegionLoading('Ladataan maakuntia…');
+  try {
+    state.regions = await loadRegions();
+  } catch (err) {
+    console.error(err);
+    ui.showRegionError('Pelin tietoja ei saatu ladattua. Päivitä sivu.');
+    return;
   }
-});
+  map.setOverview(state.regions.map((r) => r.geojson));
+  showStart();
+  map.fitFinland();
+}
+
+boot();
